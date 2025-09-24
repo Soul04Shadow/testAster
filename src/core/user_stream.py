@@ -5,6 +5,7 @@ WebSocket user data stream for real-time order and position updates.
 import asyncio
 import websockets
 import json
+import ssl
 import time
 import logging
 from typing import Optional, Callable
@@ -372,7 +373,17 @@ class UserDataStream:
         ws_url = f"{self.ws_url}{self.listen_key}"
 
         try:
-            self.ws = await websockets.connect(ws_url)
+            # Create SSL context that handles certificate verification properly
+            ssl_context = ssl.create_default_context()
+            
+            # Allow disabling SSL verification via config (same as liquidation stream)
+            disable_ssl_verify = config.GLOBAL_SETTINGS.get('disable_ssl_verify', True)
+            if disable_ssl_verify:
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                logger.warning("SSL certificate verification disabled for user data stream")
+            
+            self.ws = await websockets.connect(ws_url, ssl=ssl_context)
             logger.info("Connected to user data stream")
 
             # Start keepalive task

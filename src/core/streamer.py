@@ -1,5 +1,6 @@
 import asyncio
 import json
+import ssl
 import websockets
 from src.utils.config import config
 from src.database.db import insert_liquidation, get_db_conn, get_usdt_volume_in_window, get_volume_in_window
@@ -30,10 +31,20 @@ class LiquidationStreamer:
 
     async def listen(self):
         """Connect to websocket and listen for messages."""
+        # Create SSL context that handles certificate verification properly
+        ssl_context = ssl.create_default_context()
+        
+        # Allow disabling SSL verification via config
+        disable_ssl_verify = config.GLOBAL_SETTINGS.get('disable_ssl_verify', True)
+        if disable_ssl_verify:
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+            log.warning("SSL certificate verification disabled for WebSocket connection")
+        
         while True:
             try:
                 uri = f"{self.ws_url}?streams={self.stream}"
-                async with websockets.connect(uri) as websocket:
+                async with websockets.connect(uri, ssl=ssl_context) as websocket:
                     log.info("Connected to websocket")
                     await self.subscribe(websocket)
                     async for message in websocket:

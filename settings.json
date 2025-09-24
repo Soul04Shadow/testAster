@@ -21,7 +21,8 @@
     "batch_orders": true,
     "buffer_liquidations": true,
     "liquidation_buffer_ms": 100,
-    "order_batch_window_ms": 200
+    "order_batch_window_ms": 200,
+    "disable_ssl_verify": false
   },
   "symbols": {
     "BTCUSDT": {
