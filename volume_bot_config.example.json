@@ -1,0 +1,30 @@
+{
+  "base_url": "https://fapi.asterdex.com",
+  "symbol": "ASTERUSDT",
+  "target_notional_usdt": "100",
+  "leverage": 50,
+  "quantity_step": "0.01",
+  "hold_duration_seconds": 3,
+  "cooldown_seconds": 5,
+  "max_cycles": null,
+  "min_quantity": "0.01",
+  "account_pairs": [
+    {"long_account": "maker", "short_account": "taker"}
+  ],
+  "accounts": [
+    {
+      "name": "maker",
+      "display_name": "Maker Account",
+      "user": "0x0000000000000000000000000000000000000000",
+      "signer": "0x0000000000000000000000000000000000000000",
+      "private_key": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "taker",
+      "display_name": "Taker Account",
+      "user": "0x0000000000000000000000000000000000000000",
+      "signer": "0x0000000000000000000000000000000000000000",
+      "private_key": "0x0000000000000000000000000000000000000000000000000000000000000000"
+    }
+  ]
+}
