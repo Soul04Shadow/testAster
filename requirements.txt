@@ -4,3 +4,4 @@ python-dotenv
 flask
 flask-cors
 colorama==0.4.6
+pytest
