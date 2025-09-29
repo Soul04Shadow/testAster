@@ -32,6 +32,35 @@ def test_signed_payload_uses_hmac_signature():
     assert signed["signature"] == expected_signature
 
 
+def test_reduce_only_not_sent_in_hedge_mode():
+    account = AccountConfig(name="demo", api_key="key", api_secret="secret")
+
+    class CaptureSession(DummySession):
+        def __init__(self):
+            self.payload = None
+
+        def post(self, url, data=None, headers=None, timeout=10):  # pragma: no cover - minimal stub
+            self.payload = data
+
+            class _Resp:
+                status_code = 200
+
+                @staticmethod
+                def json():
+                    return {"orderId": 1, "avgPrice": "100"}
+
+                text = ""
+
+            return _Resp()
+
+    session = CaptureSession()
+    client = AccountClient(account, "https://fapi.asterdex.com", 5000, session_factory=lambda: session)
+
+    client.place_market_order("BTCUSDT", "SELL", "SHORT", Decimal("0.1"), reduce_only=True)
+
+    assert "reduceOnly" not in session.payload
+
+
 def test_quantity_rounding_protects_against_zero():
     config = VolumeBotConfig.from_dict(
         {

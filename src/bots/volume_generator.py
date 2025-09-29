@@ -291,7 +291,7 @@ class AccountClient:
             "positionSide": position_side,
             "quantity": format(quantity.normalize(), "f"),
         }
-        if reduce_only:
+        if reduce_only and position_side.upper() == "BOTH":
             payload["reduceOnly"] = "true"
         response = self.signed_post("/fapi/v1/order", payload)
         price_info = response.get("avgPrice") or response.get("price") or "MARKET"
@@ -387,14 +387,12 @@ class VolumeGeneratorBot:
     ) -> Decimal:
         if base_quantity <= 0:
             raise VolumeBotError("Base quantity calculated as zero; check configuration")
-
-        notional = price * base_quantity
-        required_margin = notional / Decimal(self.config.leverage)
-        if required_margin <= 0:
-            return base_quantity
+        if price <= 0:
+            raise VolumeBotError("Received non-positive price while sizing orders")
 
         min_free = self.config.min_free_margin_usdt
-        scale_factors: List[Decimal] = []
+        limiting_quantity = base_quantity
+
         for account_name in (pair.long_account, pair.short_account):
             client = self._clients[account_name]
             try:
@@ -409,26 +407,45 @@ class VolumeGeneratorBot:
                     f"[{client.account.label()}] Available margin {available} below configured buffer {min_free}"
                 )
 
-            scale = min(Decimal("1"), effective_available / required_margin)
-            scale_factors.append(scale)
-            if scale < 1:
+            max_notional = effective_available * Decimal(self.config.leverage)
+            if max_notional <= 0:
+                raise VolumeBotError(
+                    f"[{client.account.label()}] Unable to size order with available margin {available}"
+                )
+
+            account_max_quantity = max_notional / price
+            if account_max_quantity <= 0:
+                raise VolumeBotError(
+                    f"[{client.account.label()}] Available margin {available} insufficient for current symbol price {price}"
+                )
+
+            quantized_max = self.config.format_quantity(account_max_quantity, enforce_min=False)
+            if quantized_max <= 0:
+                raise VolumeBotError(
+                    f"[{client.account.label()}] Available margin cannot satisfy minimum quantity step {self.config.quantity_step}"
+                )
+
+            if quantized_max < base_quantity:
+                scale = quantized_max / base_quantity
+                required_margin = (price * base_quantity) / Decimal(self.config.leverage)
                 log.warning(
                     f"[{client.account.label()}] Scaling order size to {scale:.4f}x due to margin constraints (available={available}, required≈{required_margin:.4f})"
                 )
 
-        final_scale = min(scale_factors) if scale_factors else Decimal("1")
-        if final_scale <= 0:
-            raise VolumeBotError("Unable to size order with current margin constraints")
+            if quantized_max < limiting_quantity:
+                limiting_quantity = quantized_max
 
-        scaled_quantity = base_quantity * final_scale
-        quantized = self.config.format_quantity(scaled_quantity, enforce_min=False)
-        if quantized <= 0:
-            raise VolumeBotError("Quantity rounded to zero after margin adjustment")
-        if self.config.min_quantity and quantized < self.config.min_quantity:
+        if self.config.min_quantity and limiting_quantity < self.config.min_quantity:
             raise VolumeBotError(
                 "Available margin cannot satisfy the configured min_quantity; reduce min_quantity or increase collateral"
             )
-        return quantized
+
+        if limiting_quantity < self.config.quantity_step:
+            raise VolumeBotError(
+                "Available margin insufficient for minimum order step; deposit additional collateral or lower target_notional_usdt"
+            )
+
+        return self.config.format_quantity(limiting_quantity, enforce_min=False)
 
     def _calculate_quantity(self, pair: AccountPair, price: Decimal) -> Decimal:
         raw_quantity = self.config.target_notional_usdt / price
