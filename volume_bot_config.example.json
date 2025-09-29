@@ -1,7 +1,7 @@
 {
   "base_url": "https://fapi.asterdex.com",
   "symbol": "ASTERUSDT",
-  "target_notional_usdt": "100",
+  "quantity_usdt": "100",
   "leverage": 50,
   "quantity_step": "0.01",
   "hold_duration_seconds": 3,
@@ -9,6 +9,9 @@
   "max_cycles": null,
   "min_quantity": "0.01",
   "configure_leverage": true,
+  "min_free_margin_usdt": "5",
+  "position_close_timeout_seconds": 15,
+  "position_poll_interval_seconds": 0.5,
   "account_pairs": [
     {"long_account": "maker", "short_account": "taker"}
   ],

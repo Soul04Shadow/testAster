@@ -71,19 +71,28 @@ Need a lightweight way to generate hedged trading volume with multiple accounts?
 - 🔁 Simultaneously opens and closes matching LONG/SHORT positions across account pairs
 - 📈 Tracks the notional value traded in real time so you always know your generated volume
 - ⚙️ Configurable leverage, notional size, hold time, and trade cadence
+- 🧮 Automatically scales position size to stay within your configured free-margin buffer
+- 🔄 Detects and force-closes any leftover positions before starting a new cycle
 - 👥 Supports any number of funded accounts by pairing them in the config file
 - 🔐 Uses API key/secret authentication through the project's existing signing helpers
+- 💸 Reports per-cycle and cumulative trading fees so you can monitor costs
 
 ### How to Run
 1. Copy `volume_bot_config.example.json` to a secure location and fill in each account's `api_key` and `api_secret`.
-2. Adjust the trading parameters (symbol, target notional, quantity step, etc.) to suit your leverage and margin requirements.
+2. Adjust the trading parameters (symbol, quantity in USDT, quantity step, margin buffer, etc.) to suit your leverage and capital requirements.
 3. Install dependencies (`pip install -r requirements.txt`).
 4. Launch the bot:
    ```bash
    python scripts/simple_volume_bot.py --config /path/to/your_config.json
    ```
 
-The bot will print every open/close action along with the cumulative traded volume so you can monitor progress from the terminal.
+The bot will print every open/close action, track cumulative traded volume and display the running total of fees paid so you can monitor progress from the terminal.
+
+### New configuration knobs
+
+- `quantity_usdt` – specify the order size in USDT (legacy `target_notional_usdt` is still supported).
+- `min_free_margin_usdt` – keep this much margin free per account; the bot will downsize positions if available balance is tighter.
+- `position_close_timeout_seconds` / `position_poll_interval_seconds` – control how long the bot waits for reduce-only orders to flatten positions before raising an error.
 
 ## 📊 Dashboard Preview
 
