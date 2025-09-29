@@ -94,6 +94,19 @@ The bot will print every open/close action, track cumulative traded volume and d
 - `min_free_margin_usdt` – keep this much margin free per account; the bot will downsize positions if available balance is tighter.
 - `position_close_timeout_seconds` / `position_poll_interval_seconds` – control how long the bot waits for reduce-only orders to flatten positions before raising an error.
 
+### Fee reporting helper
+
+Need a quick way to see how much you have spent on commissions so far? Use the bundled helper to aggregate fees directly from the
+API:
+
+```bash
+python scripts/fetch_total_fees.py --config /path/to/your_config.json
+```
+
+Optional flags let you narrow the report to particular accounts (`--accounts maker taker`), symbols (`--symbol BTCUSDT`) or time
+windows (`--start-date 2024-01-01`). The script prints the total fees per account and an overall summary using the same
+credentials you already configured for the volume bot.
+
 ## 📊 Dashboard Preview
 
 <img width="1896" height="954" alt="Dashboard Screenshot" src="https://github.com/user-attachments/assets/3fbba51a-8111-40d8-9a35-c6bf2bd31236" />
