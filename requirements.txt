@@ -4,7 +4,4 @@ python-dotenv
 flask
 flask-cors
 colorama==0.4.6
-web3
-eth-account
-eth-abi
 pytest

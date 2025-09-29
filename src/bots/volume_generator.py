@@ -1,49 +1,41 @@
-"""Simplified delta-neutral volume generation bot for Aster Pro."""
-from __future__ import annotations
+"""Delta-neutral volume generator built on top of the repo's API utilities."""
 
-import json
-import math
-import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN, getcontext
+import time
 from typing import Dict, List, Optional
+from urllib.parse import urlencode
 
 import requests
-from eth_abi import encode as abi_encode
-from eth_account import Account
-from eth_account.messages import encode_defunct
 from requests import Response, Session
-from web3 import Web3
 
-# Increase decimal precision for leverage/quantity calculations
+from src.utils.auth import create_signature
+from src.utils.utils import log
+
+# Ensure decimal operations maintain precision when sizing orders
 getcontext().prec = 28
 
 
-class AsterProClientError(RuntimeError):
-    """Raised when the Aster Pro API returns an error response."""
+class VolumeBotError(RuntimeError):
+    """Raised when the volume generator encounters an API error."""
 
-    def __init__(self, message: str, response: Optional[Response] = None):
+    def __init__(self, message: str, response: Optional[Response] = None) -> None:
         super().__init__(message)
         self.response = response
 
 
 @dataclass
 class AccountConfig:
-    """Configuration for an individual trading account."""
+    """Configuration for an API-key authenticated account."""
 
     name: str
-    user: str
-    signer: str
-    private_key: str
+    api_key: str
+    api_secret: str
     display_name: Optional[str] = None
 
-    def __post_init__(self) -> None:
-        # Normalise addresses to checksum format for signing.
-        self.user_checksum = Web3.to_checksum_address(self.user)
-        self.signer_checksum = Web3.to_checksum_address(self.signer)
-        # eth_account expects hex prefixed keys
-        if not self.private_key.startswith("0x"):
-            raise ValueError("Private keys must be 0x-prefixed hex strings")
+    def label(self) -> str:
+        return self.display_name or self.name
 
 
 @dataclass
@@ -67,50 +59,53 @@ class VolumeBotConfig:
     cooldown_seconds: float
     account_pairs: List[AccountPair]
     accounts: Dict[str, AccountConfig]
-    recv_window: int = 50_000
+    recv_window: int = 5_000
     max_cycles: Optional[int] = None
     price_source_url: Optional[str] = None
     min_quantity: Optional[Decimal] = None
+    configure_leverage: bool = True
 
     @classmethod
     def from_dict(cls, raw: Dict) -> "VolumeBotConfig":
-        base_url = raw.get("base_url", "https://fapi.asterdex.com")
+        base_url = raw.get("base_url", "https://fapi.asterdex.com").rstrip("/")
         symbol = raw["symbol"].upper()
         target_notional = Decimal(str(raw.get("target_notional_usdt", "0")))
         leverage = int(raw.get("leverage", 50))
         quantity_step = Decimal(str(raw.get("quantity_step", "0.001")))
         hold_duration = float(raw.get("hold_duration_seconds", 2))
         cooldown = float(raw.get("cooldown_seconds", 3))
-        recv_window = int(raw.get("recv_window", 50_000))
+        recv_window = int(raw.get("recv_window", 5_000))
         max_cycles = raw.get("max_cycles")
-        min_qty = raw.get("min_quantity")
         price_source_url = raw.get("price_source_url")
+        min_qty = raw.get("min_quantity")
+        configure_leverage = bool(raw.get("configure_leverage", True))
 
         if target_notional <= 0:
             raise ValueError("target_notional_usdt must be greater than zero")
         if quantity_step <= 0:
             raise ValueError("quantity_step must be a positive decimal")
 
-        accounts = {
-            entry["name"]: AccountConfig(
+        accounts = {}
+        for entry in raw.get("accounts", []):
+            if not entry.get("api_key") or not entry.get("api_secret"):
+                raise ValueError("Each account requires api_key and api_secret")
+            account = AccountConfig(
                 name=entry["name"],
-                user=entry["user"],
-                signer=entry["signer"],
-                private_key=entry["private_key"],
+                api_key=entry["api_key"],
+                api_secret=entry["api_secret"],
                 display_name=entry.get("display_name"),
             )
-            for entry in raw.get("accounts", [])
-        }
+            accounts[account.name] = account
 
         account_pairs = [
             AccountPair(long_account=item["long_account"], short_account=item["short_account"])
             for item in raw.get("account_pairs", [])
         ]
 
-        if not account_pairs:
-            raise ValueError("At least one account pair must be configured")
         if not accounts:
             raise ValueError("Account credentials are required")
+        if not account_pairs:
+            raise ValueError("At least one account pair must be configured")
 
         if isinstance(max_cycles, str) and max_cycles.strip():
             max_cycles = int(max_cycles)
@@ -133,6 +128,7 @@ class VolumeBotConfig:
             max_cycles=max_cycles,
             price_source_url=price_source_url,
             min_quantity=min_quantity_decimal,
+            configure_leverage=configure_leverage,
         )
 
     def format_quantity(self, quantity: Decimal) -> Decimal:
@@ -145,108 +141,80 @@ class VolumeBotConfig:
         return quantized
 
 
-def _trim_dict(data: Dict) -> Dict:
-    """Convert nested payload items to strings and remove None values."""
-    result = {}
-    for key, value in data.items():
-        if value is None:
-            continue
-        if isinstance(value, dict):
-            result[key] = json.dumps(_trim_dict(value), separators=(",", ":"))
-        elif isinstance(value, list):
-            coerced: List = []
-            for item in value:
-                if isinstance(item, dict):
-                    coerced.append(json.dumps(_trim_dict(item), separators=(",", ":")))
-                else:
-                    coerced.append(str(item))
-            result[key] = json.dumps(coerced, separators=(",", ":"))
-        else:
-            result[key] = str(value)
-    return result
+class AccountClient:
+    """Minimal REST client for a single API key/secret pair."""
 
-
-class AsterAgentAuthenticator:
-    """Implements the agent-based signing scheme described in the API docs."""
-
-    def __init__(self, account: AccountConfig, recv_window: int = 50_000):
+    def __init__(
+        self,
+        account: AccountConfig,
+        base_url: str,
+        recv_window: int,
+        session_factory=requests.Session,
+    ) -> None:
         self.account = account
+        self.base_url = base_url
         self.recv_window = recv_window
+        self._session: Session = session_factory()
 
-    def sign(self, payload: Dict, *, timestamp_ms: Optional[int] = None, nonce_us: Optional[int] = None) -> Dict:
-        cleaned = _trim_dict(dict(payload))
+    def _sign_params(self, params: Dict[str, str], timestamp_ms: Optional[int] = None) -> OrderedDict:
+        cleaned = OrderedDict()
+        for key, value in params.items():
+            if value is None:
+                continue
+            cleaned[key] = str(value)
+
         cleaned.setdefault("recvWindow", str(self.recv_window))
         if timestamp_ms is None:
             timestamp_ms = int(time.time() * 1000)
         cleaned["timestamp"] = str(timestamp_ms)
 
-        json_str = json.dumps(cleaned, sort_keys=True, separators=(",", ":"))
-
-        if nonce_us is None:
-            nonce_us = math.trunc(time.time() * 1_000_000)
-
-        encoded = abi_encode(
-            ["string", "address", "address", "uint256"],
-            [json_str, self.account.user_checksum, self.account.signer_checksum, nonce_us],
-        )
-        keccak_hex = Web3.keccak(encoded).hex()
-
-        message = encode_defunct(hexstr=keccak_hex)
-        signature = Account.sign_message(signable_message=message, private_key=self.account.private_key)
-
-        signed_payload = cleaned.copy()
-        signed_payload.update(
-            {
-                "nonce": str(nonce_us),
-                "user": self.account.user_checksum,
-                "signer": self.account.signer_checksum,
-                "signature": "0x" + signature.signature.hex(),
-            }
-        )
-        return signed_payload
-
-
-class AsterProClient:
-    """Lightweight HTTP client focused on the endpoints required by the simple bot."""
-
-    def __init__(self, account: AccountConfig, base_url: str, recv_window: int = 50_000, session: Optional[Session] = None):
-        self.account = account
-        self.base_url = base_url.rstrip("/")
-        self.session = session or requests.Session()
-        self.auth = AsterAgentAuthenticator(account, recv_window=recv_window)
+        query_string = urlencode(list(cleaned.items()))
+        signature = create_signature(query_string, self.account.api_secret)
+        cleaned["signature"] = signature
+        return cleaned
 
     def _handle_response(self, response: Response) -> Dict:
-        try:
-            data = response.json()
-        except ValueError as exc:  # pragma: no cover - defensive branch
-            raise AsterProClientError("Invalid JSON response", response=response) from exc
-
         if response.status_code >= 400:
-            message = data.get("msg") or data.get("message") or response.text
-            raise AsterProClientError(f"API error ({response.status_code}): {message}", response=response)
-        return data
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = response.text
+            message = payload if isinstance(payload, str) else payload.get("msg") or str(payload)
+            raise VolumeBotError(f"API request failed: {message}", response=response)
+        if not response.text:
+            return {}
+        return response.json()
 
-    def post_private(self, path: str, payload: Dict) -> Dict:
+    def signed_get(self, path: str, params: Optional[Dict] = None) -> Dict:
+        signed = self._sign_params(params or {})
         url = f"{self.base_url}{path}"
-        signed_payload = self.auth.sign(payload)
-        response = self.session.post(
+        response = self._session.get(url, params=signed, headers={"X-MBX-APIKEY": self.account.api_key}, timeout=10)
+        return self._handle_response(response)
+
+    def signed_post(self, path: str, params: Optional[Dict] = None) -> Dict:
+        signed = self._sign_params(params or {})
+        url = f"{self.base_url}{path}"
+        response = self._session.post(
             url,
-            data=signed_payload,
-            headers={
-                "Content-Type": "application/x-www-form-urlencoded",
-                "User-Agent": "AsterVolumeBot/0.1",
-            },
+            data=signed,
+            headers={"X-MBX-APIKEY": self.account.api_key, "Content-Type": "application/x-www-form-urlencoded"},
             timeout=10,
         )
         return self._handle_response(response)
 
+    def set_leverage(self, symbol: str, leverage: int) -> None:
+        try:
+            self.signed_post("/fapi/v1/leverage", {"symbol": symbol, "leverage": leverage})
+            log.info(f"[{self.account.label()}] Set leverage to {leverage}x for {symbol}")
+        except VolumeBotError as exc:
+            log.warning(f"[{self.account.label()}] Unable to set leverage: {exc}")
+
     def place_market_order(
         self,
-        *,
         symbol: str,
         side: str,
-        quantity: Decimal,
         position_side: str,
+        quantity: Decimal,
         reduce_only: bool = False,
     ) -> Dict:
         payload = {
@@ -254,87 +222,101 @@ class AsterProClient:
             "side": side,
             "type": "MARKET",
             "positionSide": position_side,
-            "quantity": f"{quantity:f}",
-            "reduceOnly": "true" if reduce_only else "false",
+            "quantity": format(quantity.normalize(), "f"),
         }
-        return self.post_private("/fapi/v3/order", payload)
+        if reduce_only:
+            payload["reduceOnly"] = "true"
+        response = self.signed_post("/fapi/v1/order", payload)
+        price_info = response.get("avgPrice") or response.get("price") or "MARKET"
+        log.trade_placed(symbol, f"{side} {position_side}", payload["quantity"], price_info)
+        return response
 
 
 class VolumeGeneratorBot:
-    """Coordinates delta-neutral market orders across multiple accounts."""
+    """Simple loop that opens and closes matched positions across account pairs."""
 
     def __init__(self, config: VolumeBotConfig, session_factory=requests.Session):
         self.config = config
-        self.session_factory = session_factory
-        self.clients = {
-            name: AsterProClient(account=acct, base_url=config.base_url, recv_window=config.recv_window, session=session_factory())
-            for name, acct in config.accounts.items()
+        self._session_factory = session_factory
+        self._clients = {
+            name: AccountClient(account, config.base_url, config.recv_window, session_factory=session_factory)
+            for name, account in config.accounts.items()
         }
-        self.total_volume = Decimal("0")
-        self.total_trades = 0
+        self._public_session: Session = session_factory()
+        self._total_volume: Decimal = Decimal("0")
 
-    def get_last_price(self) -> Decimal:
-        url = self.config.price_source_url or f"{self.config.base_url}/fapi/v1/ticker/price"
-        response = requests.get(url, params={"symbol": self.config.symbol}, timeout=10)
-        response.raise_for_status()
-        payload = response.json()
-        price = payload["price"] if isinstance(payload, dict) else payload[0]["price"]
-        return Decimal(str(price))
+        if self.config.configure_leverage:
+            for client in self._clients.values():
+                client.set_leverage(self.config.symbol, self.config.leverage)
 
-    def _execute_pair_cycle(self, pair: AccountPair, quantity: Decimal, notional: Decimal) -> None:
-        long_client = self.clients[pair.long_account]
-        short_client = self.clients[pair.short_account]
+    @property
+    def total_volume(self) -> Decimal:
+        return self._total_volume
 
-        print(f"  Opening positions: {pair.long_account} LONG / {pair.short_account} SHORT (qty={quantity})")
-        long_client.place_market_order(symbol=self.config.symbol, side="BUY", quantity=quantity, position_side="LONG")
-        short_client.place_market_order(symbol=self.config.symbol, side="SELL", quantity=quantity, position_side="SHORT")
+    def _get_price(self) -> Decimal:
+        price_url = self.config.price_source_url or f"{self.config.base_url}/fapi/v1/ticker/price"
+        params = {"symbol": self.config.symbol}
+        response = self._public_session.get(price_url, params=params, timeout=10)
+        if response.status_code >= 400:
+            raise VolumeBotError(f"Failed to fetch price: {response.text}")
+        data = response.json()
+        price_value = data.get("price") if isinstance(data, dict) else None
+        if price_value is None:
+            raise VolumeBotError("Ticker price response missing 'price' field")
+        return Decimal(str(price_value))
 
+    def _cycle_pair(self, pair: AccountPair) -> None:
+        long_client = self._clients[pair.long_account]
+        short_client = self._clients[pair.short_account]
+
+        price = self._get_price()
+        quantity = self.config.format_quantity(self.config.target_notional_usdt / price)
+        notional = price * quantity
+
+        log.info(
+            f"Executing delta-neutral cycle on {self.config.symbol}: qty={quantity} price={price} notional≈${notional:,.2f}"
+        )
+
+        long_client.place_market_order(self.config.symbol, "BUY", "LONG", quantity)
+        short_client.place_market_order(self.config.symbol, "SELL", "SHORT", quantity)
+        self._total_volume += notional * 2
+
+        log.info(f"Holding positions for {self.config.hold_duration_seconds:.1f}s")
         time.sleep(self.config.hold_duration_seconds)
 
-        print(f"  Closing positions: {pair.long_account} LONG / {pair.short_account} SHORT")
         long_client.place_market_order(
-            symbol=self.config.symbol,
-            side="SELL",
-            quantity=quantity,
-            position_side="LONG",
+            self.config.symbol,
+            "SELL",
+            "LONG",
+            quantity,
             reduce_only=True,
         )
         short_client.place_market_order(
-            symbol=self.config.symbol,
-            side="BUY",
-            quantity=quantity,
-            position_side="SHORT",
+            self.config.symbol,
+            "BUY",
+            "SHORT",
+            quantity,
             reduce_only=True,
         )
+        self._total_volume += notional * 2
 
-        trades_in_cycle = 4
-        self.total_trades += trades_in_cycle
-        self.total_volume += notional * trades_in_cycle
+        log.info(
+            f"Closed cycle for pair {pair.long_account}/{pair.short_account}. Total generated volume: ${self._total_volume:,.2f}"
+        )
 
     def run(self) -> None:
+        log.startup("Starting simple delta-neutral volume generator")
         cycle = 0
-        print("Starting Aster delta-neutral volume generator...")
-        print(f"Symbol: {self.config.symbol}, leverage: {self.config.leverage}x, target notional: {self.config.target_notional_usdt} USDT")
-        print(f"Account pairs: {[f'{p.long_account}->{p.short_account}' for p in self.config.account_pairs]}")
-
         try:
             while self.config.max_cycles is None or cycle < self.config.max_cycles:
-                cycle += 1
-                price = self.get_last_price()
-                quantity = self.config.format_quantity(self.config.target_notional_usdt / price)
-                notional = quantity * price
-
-                print(f"\nCycle {cycle}: last price {price:.6f} -> quantity {quantity} ({notional:.2f} USDT per leg)")
-
                 for pair in self.config.account_pairs:
-                    self._execute_pair_cycle(pair, quantity, notional)
-
-                print(
-                    f"Cycle {cycle} complete: total trades={self.total_trades}, total volume={self.total_volume:.2f} USDT"
-                )
-
-                time.sleep(self.config.cooldown_seconds)
+                    try:
+                        self._cycle_pair(pair)
+                    except Exception as exc:  # pylint: disable=broad-except
+                        log.error(f"Cycle failed for pair {pair.long_account}/{pair.short_account}: {exc}")
+                    time.sleep(self.config.cooldown_seconds)
+                cycle += 1
         except KeyboardInterrupt:
-            print("\nBot stopped by user. Final volume: {:.2f} USDT across {} trades.".format(self.total_volume, self.total_trades))
-        except requests.RequestException as exc:
-            raise RuntimeError(f"Network error when communicating with Aster Pro: {exc}") from exc
+            log.warning("Received keyboard interrupt, shutting down volume generator")
+        finally:
+            log.shutdown(f"Total notional volume generated: ${self._total_volume:,.2f}")

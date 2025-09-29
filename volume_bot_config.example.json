@@ -8,6 +8,7 @@
   "cooldown_seconds": 5,
   "max_cycles": null,
   "min_quantity": "0.01",
+  "configure_leverage": true,
   "account_pairs": [
     {"long_account": "maker", "short_account": "taker"}
   ],
@@ -15,16 +16,14 @@
     {
       "name": "maker",
       "display_name": "Maker Account",
-      "user": "0x0000000000000000000000000000000000000000",
-      "signer": "0x0000000000000000000000000000000000000000",
-      "private_key": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      "api_key": "your-maker-api-key",
+      "api_secret": "your-maker-api-secret"
     },
     {
       "name": "taker",
       "display_name": "Taker Account",
-      "user": "0x0000000000000000000000000000000000000000",
-      "signer": "0x0000000000000000000000000000000000000000",
-      "private_key": "0x0000000000000000000000000000000000000000000000000000000000000000"
+      "api_key": "your-taker-api-key",
+      "api_secret": "your-taker-api-secret"
     }
   ]
 }

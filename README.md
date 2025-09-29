@@ -72,9 +72,10 @@ Need a lightweight way to generate hedged trading volume with multiple accounts?
 - 📈 Tracks the notional value traded in real time so you always know your generated volume
 - ⚙️ Configurable leverage, notional size, hold time, and trade cadence
 - 👥 Supports any number of funded accounts by pairing them in the config file
+- 🔐 Uses API key/secret authentication through the project's existing signing helpers
 
 ### How to Run
-1. Copy `volume_bot_config.example.json` to a secure location and fill in your `user`, `signer`, and `private_key` values for each account.
+1. Copy `volume_bot_config.example.json` to a secure location and fill in each account's `api_key` and `api_secret`.
 2. Adjust the trading parameters (symbol, target notional, quantity step, etc.) to suit your leverage and margin requirements.
 3. Install dependencies (`pip install -r requirements.txt`).
 4. Launch the bot:
@@ -163,9 +164,10 @@ Need a lightweight way to generate hedged trading volume with multiple accounts?
 - 📈 Tracks the notional value traded in real time so you always know your generated volume
 - ⚙️ Configurable leverage, notional size, hold time, and trade cadence
 - 👥 Supports any number of funded accounts by pairing them in the config file
+- 🔐 Uses API key/secret authentication through the project's existing signing helpers
 
 ### How to Run
-1. Copy `volume_bot_config.example.json` to a secure location and fill in your `user`, `signer`, and `private_key` values for each account.
+1. Copy `volume_bot_config.example.json` to a secure location and fill in each account's `api_key` and `api_secret`.
 2. Adjust the trading parameters (symbol, target notional, quantity step, etc.) to suit your leverage and margin requirements.
 3. Install dependencies (`pip install -r requirements.txt`).
 4. Launch the bot:
@@ -244,9 +246,10 @@ Need a lightweight way to generate hedged trading volume with multiple accounts?
 - 📈 Tracks the notional value traded in real time so you always know your generated volume
 - ⚙️ Configurable leverage, notional size, hold time, and trade cadence
 - 👥 Supports any number of funded accounts by pairing them in the config file
+- 🔐 Uses API key/secret authentication through the project's existing signing helpers
 
 ### How to Run
-1. Copy `volume_bot_config.example.json` to a secure location and fill in your `user`, `signer`, and `private_key` values for each account.
+1. Copy `volume_bot_config.example.json` to a secure location and fill in each account's `api_key` and `api_secret`.
 2. Adjust the trading parameters (symbol, target notional, quantity step, etc.) to suit your leverage and margin requirements.
 3. Install dependencies (`pip install -r requirements.txt`).
 4. Launch the bot:
@@ -300,9 +303,10 @@ Need a lightweight way to generate hedged trading volume with multiple accounts?
 - 📈 Tracks the notional value traded in real time so you always know your generated volume
 - ⚙️ Configurable leverage, notional size, hold time, and trade cadence
 - 👥 Supports any number of funded accounts by pairing them in the config file
+- 🔐 Uses API key/secret authentication through the project's existing signing helpers
 
 ### How to Run
-1. Copy `volume_bot_config.example.json` to a secure location and fill in your `user`, `signer`, and `private_key` values for each account.
+1. Copy `volume_bot_config.example.json` to a secure location and fill in each account's `api_key` and `api_secret`.
 2. Adjust the trading parameters (symbol, target notional, quantity step, etc.) to suit your leverage and margin requirements.
 3. Install dependencies (`pip install -r requirements.txt`).
 4. Launch the bot:
